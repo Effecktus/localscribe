@@ -1,0 +1,25 @@
+[project]
+name = "localscribe"
+version = "0.1.0"
+description = "Локальная транскрибация видео/аудио (faster-whisper) и суммаризация (Ollama)"
+requires-python = ">=3.12"
+dependencies = [
+    "faster-whisper==1.2.1",
+    "av<19,>=18",          # PyAV 19+ сломал сигнатуру av.open() (metadata_errors), которую использует faster-whisper
+    "torch==2.11.0",
+    "nvidia-cublas-cu12",
+    "nvidia-cudnn-cu12",
+    "typer>=0.15",
+    "rich>=13",
+    "httpx>=0.27",          # клиент для Ollama HTTP API
+]
+
+[project.scripts]
+localscribe = "localscribe.cli:app"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -37,13 +37,15 @@
 
 ## 4. Структура проекта
 ```
-Cods/
+localscribe/
 ├── pyproject.toml
 ├── README.md
 ├── PLAN.md
 ├── .env.example
+├── scripts/
+│   └── fix_ctranslate2_cuda_dlls.py   # Windows-фикс, см. раздел M0
 ├── src/
-│   └── transcriber/
+│   └── localscribe/
 │       ├── __init__.py
 │       ├── cli.py          # Typer-приложение, команды
 │       ├── audio.py        # извлечение/конвертация через ffmpeg
@@ -67,16 +69,31 @@ transcriber process <путь_к_файлу> [опции]
   --llm-model NAME      имя модели в Ollama (default: qwen2.5:7b-instruct)
   --lang CODE           ru (default) | auto
   --device cuda|cpu     (default: auto-detect, fallback cpu)
-  --summary-style TEXT  краткая/подробная/тезисы (default: тезисы)
+  --summary-style TEXT  краткая/подробная/тезисы (default: краткая)
   --keep-audio          не удалять промежуточный WAV
 ```
 Плюс отдельные подкоманды `transcribe` и `summarize` для запуска только одного шага (полезно для отладки и повторного прогона выжимки без повторной транскрибации).
 
 ## 6. Этапы реализации
-1. **M0 — Подготовка окружения**
-   - Установить Python, ffmpeg, Ollama на машине пользователя.
-   - Скачать модель в Ollama (`ollama pull qwen2.5:7b-instruct`).
-   - Скрипт/команда `transcriber doctor` — проверяет наличие ffmpeg, CUDA, доступность Ollama.
+1. **M0 — Подготовка окружения** ✅ выполнено и проверено
+   - Установлено через winget: Python 3.12.10, FFmpeg 9.0.2 (Gyan.FFmpeg), Ollama 0.40.4.
+   - Venv (`.venv`) с torch==2.11.0+cu128, faster-whisper==1.2.1 (ctranslate2 4.8.3).
+   - Модель `qwen2.5:7b-instruct` (4.8GB) скачана и протестирована через Ollama API.
+   - **Проверено вживую**: PyTorch видит GPU (`RTX 5060`, compute capability `(12, 0)` = sm_120),
+     faster-whisper на `device="cuda"` реально гоняет инференс на GPU, Ollama генерирует текст на
+     русском через `qwen2.5:7b-instruct` на GPU (~77 ток/с).
+   - **Найденные и решённые проблемы окружения (Windows + RTX 5060/Blackwell):**
+     1. PyAV 19.x сломал сигнатуру `av.open()` (убрали `metadata_errors`), которую использует
+        faster-whisper 1.2.1 → зафиксировали `av<19,>=18` в зависимостях.
+     2. ctranslate2 (бэкенд faster-whisper) не находит `cublas64_12.dll` и часть
+        `cudnn_*64_9.dll` — эти DLL есть в pip-пакетах `nvidia-cublas-cu12`/`nvidia-cudnn-cu12`,
+        но лежат в чужой папке site-packages, и ни PATH, ни `os.add_dll_directory` не помогают
+        нативному расширению ctranslate2 их найти. Рабочий фикс — копировать DLL прямо в папку
+        пакета `ctranslate2` (Windows ищет зависимости рядом с загружаемым модулем):
+        см. `scripts/fix_ctranslate2_cuda_dlls.py`. Нужно прогонять этот скрипт один раз после
+        установки зависимостей (включить в будущий `localscribe doctor` / setup-инструкцию).
+   - Осталось на будущее: оформить `localscribe doctor` — команду, которая на старте проверяет
+     ffmpeg/CUDA/Ollama и подсказывает, что не так (сейчас всё проверено вручную).
 2. **M1 — Извлечение аудио** (`audio.py`): любой видео/аудио вход → нормализованный WAV 16kHz mono через ffmpeg.
 3. **M2 — Транскрибация** (`transcribe.py`): интеграция faster-whisper с GPU, сохранение текста.
 4. **M3 — Суммаризация** (`summarize.py`): промпт-шаблон на русском, вызов Ollama API, обработка длинных транскриптов (чанкинг + map-reduce суммаризация, если текст не влезает в контекст модели).
