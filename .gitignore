@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Env / secrets
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project outputs (временные файлы прогона — не коммитим)
+*.wav
+*.transcript.txt
+*.summary.txt
+/outputs/
+
+# Model caches (большие, качаются при первом запуске)
+.cache/
