@@ -25,17 +25,22 @@ from localscribe.config import (
 )
 from localscribe.errors import LocalscribeError
 
+# Разрешаем "-h" как короткий алиас для "--help" (по умолчанию Typer/click
+# понимают только "--help").
+CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
+
 app = typer.Typer(
     help="Локальная (офлайн) транскрибация видео/аудио и суммаризация через LLM.",
     no_args_is_help=True,
+    context_settings=CONTEXT_SETTINGS,
 )
 console = Console()
 logger = logging.getLogger("localscribe")
 
 
-@app.callback()
+@app.callback(context_settings=CONTEXT_SETTINGS)
 def main(
-    verbose: bool = typer.Option(False, "--verbose", "-v", help="Подробный (debug) вывод."),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Подробный (debug) вывод: показывать debug-логи (загрузка моделей, HTTP-запросы к Ollama и т.п.)."),
 ) -> None:
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
@@ -61,26 +66,49 @@ def _fail(message: str) -> "typer.Exit":
 EXPECTED_ERRORS = (LocalscribeError, ValueError, FileNotFoundError)
 
 
-@app.command()
+@app.command(context_settings=CONTEXT_SETTINGS)
 def process(
     input_path: Path = typer.Argument(
         ..., exists=True, file_okay=True, dir_okay=False, readable=True,
-        help="Путь к видео- или аудиофайлу.",
+        help="Путь к видео- или аудиофайлу (любой формат, который понимает ffmpeg).",
     ),
     out_dir: Optional[Path] = typer.Option(
-        None, "--out-dir", help="Куда сохранить результаты (по умолчанию - рядом с входным файлом)."
+        None, "--out-dir",
+        help="Куда сохранить <имя>.transcript.txt и <имя>.summary.txt. "
+             "По умолчанию - рядом с входным файлом.",
     ),
-    whisper_model: str = typer.Option(DEFAULT_WHISPER_MODEL, "--whisper-model", help="Модель faster-whisper."),
-    llm_model: str = typer.Option(DEFAULT_OLLAMA_MODEL, "--llm-model", help="Модель в Ollama для суммаризации."),
-    lang: str = typer.Option(DEFAULT_LANGUAGE, "--lang", help="Код языка (ru) или 'auto' для автоопределения."),
-    device: str = typer.Option(DEFAULT_WHISPER_DEVICE, "--device", help="cuda | cpu"),
+    whisper_model: str = typer.Option(
+        DEFAULT_WHISPER_MODEL, "--whisper-model",
+        help="Размер/имя модели faster-whisper для распознавания речи "
+             "(tiny, base, small, medium, large-v3, large-v3-turbo, ...).",
+    ),
+    llm_model: str = typer.Option(
+        DEFAULT_OLLAMA_MODEL, "--llm-model",
+        help="Имя модели в Ollama для суммаризации (должна быть скачана: ollama pull <модель>).",
+    ),
+    lang: str = typer.Option(
+        DEFAULT_LANGUAGE, "--lang",
+        help="Код языка речи (например 'ru', 'en') или 'auto' для автоопределения Whisper'ом.",
+    ),
+    device: str = typer.Option(
+        DEFAULT_WHISPER_DEVICE, "--device",
+        help="Устройство для транскрибации: 'cuda' (GPU) или 'cpu'. "
+             "При сбое/отсутствии CUDA автоматически откатывается на CPU.",
+    ),
     summary_style: str = typer.Option(
-        DEFAULT_SUMMARY_STYLE, "--summary-style", help="краткая | подробная | тезисы"
+        DEFAULT_SUMMARY_STYLE, "--summary-style",
+        help="Стиль выжимки: 'краткая' (2-4 предложения), "
+             "'подробная' (несколько абзацев) или 'тезисы' (маркированный список).",
     ),
     keep_audio: bool = typer.Option(
-        False, "--keep-audio", help="Не удалять промежуточный WAV после обработки."
+        False, "--keep-audio",
+        help="Не удалять промежуточный WAV-файл после обработки "
+             "(сохранится как <имя>.audio.wav в --out-dir).",
     ),
-    ollama_host: str = typer.Option(DEFAULT_OLLAMA_HOST, "--ollama-host", hidden=True),
+    ollama_host: str = typer.Option(
+        DEFAULT_OLLAMA_HOST, "--ollama-host",
+        help="Адрес сервера Ollama (если запущен не локально или на другом порту).",
+    ),
 ) -> None:
     """Полный пайплайн: входной файл -> транскрипт -> выжимка."""
     out_dir = out_dir or input_path.parent
@@ -138,20 +166,34 @@ def _transcribe_and_save(
     return result.text
 
 
-@app.command(name="transcribe")
+@app.command(name="transcribe", context_settings=CONTEXT_SETTINGS)
 def transcribe_cmd(
     input_path: Path = typer.Argument(
         ..., exists=True, file_okay=True, dir_okay=False, readable=True,
-        help="Путь к видео- или аудиофайлу.",
+        help="Путь к видео- или аудиофайлу (любой формат, который понимает ffmpeg).",
     ),
     out_path: Optional[Path] = typer.Option(
-        None, "--out", help="Куда сохранить транскрипт (по умолчанию - <имя>.transcript.txt рядом с входным файлом)."
+        None, "--out",
+        help="Куда сохранить транскрипт. По умолчанию - <имя>.transcript.txt рядом с входным файлом.",
     ),
-    whisper_model: str = typer.Option(DEFAULT_WHISPER_MODEL, "--whisper-model"),
-    lang: str = typer.Option(DEFAULT_LANGUAGE, "--lang"),
-    device: str = typer.Option(DEFAULT_WHISPER_DEVICE, "--device"),
+    whisper_model: str = typer.Option(
+        DEFAULT_WHISPER_MODEL, "--whisper-model",
+        help="Размер/имя модели faster-whisper для распознавания речи "
+             "(tiny, base, small, medium, large-v3, large-v3-turbo, ...).",
+    ),
+    lang: str = typer.Option(
+        DEFAULT_LANGUAGE, "--lang",
+        help="Код языка речи (например 'ru', 'en') или 'auto' для автоопределения Whisper'ом.",
+    ),
+    device: str = typer.Option(
+        DEFAULT_WHISPER_DEVICE, "--device",
+        help="Устройство для транскрибации: 'cuda' (GPU) или 'cpu'. "
+             "При сбое/отсутствии CUDA автоматически откатывается на CPU.",
+    ),
     keep_audio: bool = typer.Option(
-        False, "--keep-audio", help="Не удалять промежуточный WAV после обработки."
+        False, "--keep-audio",
+        help="Не удалять промежуточный WAV после обработки "
+             "(сохранится как <имя>.audio.wav рядом с входным файлом).",
     ),
 ) -> None:
     """Только транскрибация (без суммаризации)."""
@@ -169,18 +211,29 @@ def transcribe_cmd(
         raise _fail(str(exc))
 
 
-@app.command(name="summarize")
+@app.command(name="summarize", context_settings=CONTEXT_SETTINGS)
 def summarize_cmd(
     transcript_path: Path = typer.Argument(
         ..., exists=True, file_okay=True, dir_okay=False, readable=True,
-        help="Текстовый файл с готовым транскриптом.",
+        help="Текстовый файл (UTF-8) с готовым транскриптом.",
     ),
     out_path: Optional[Path] = typer.Option(
-        None, "--out", help="Куда сохранить выжимку (по умолчанию - <имя>.summary.txt рядом с транскриптом)."
+        None, "--out",
+        help="Куда сохранить выжимку. По умолчанию - <имя>.summary.txt рядом с транскриптом.",
     ),
-    llm_model: str = typer.Option(DEFAULT_OLLAMA_MODEL, "--llm-model"),
-    summary_style: str = typer.Option(DEFAULT_SUMMARY_STYLE, "--summary-style"),
-    ollama_host: str = typer.Option(DEFAULT_OLLAMA_HOST, "--ollama-host", hidden=True),
+    llm_model: str = typer.Option(
+        DEFAULT_OLLAMA_MODEL, "--llm-model",
+        help="Имя модели в Ollama для суммаризации (должна быть скачана: ollama pull <модель>).",
+    ),
+    summary_style: str = typer.Option(
+        DEFAULT_SUMMARY_STYLE, "--summary-style",
+        help="Стиль выжимки: 'краткая' (2-4 предложения), "
+             "'подробная' (несколько абзацев) или 'тезисы' (маркированный список).",
+    ),
+    ollama_host: str = typer.Option(
+        DEFAULT_OLLAMA_HOST, "--ollama-host",
+        help="Адрес сервера Ollama (если запущен не локально или на другом порту).",
+    ),
 ) -> None:
     """Только суммаризация готового текстового транскрипта (без распознавания речи)."""
     out_path = out_path or transcript_path.with_name(
@@ -198,10 +251,16 @@ def summarize_cmd(
         raise _fail(str(exc))
 
 
-@app.command()
+@app.command(context_settings=CONTEXT_SETTINGS)
 def doctor(
-    llm_model: str = typer.Option(DEFAULT_OLLAMA_MODEL, "--llm-model"),
-    ollama_host: str = typer.Option(DEFAULT_OLLAMA_HOST, "--ollama-host"),
+    llm_model: str = typer.Option(
+        DEFAULT_OLLAMA_MODEL, "--llm-model",
+        help="Какую модель в Ollama проверять на наличие.",
+    ),
+    ollama_host: str = typer.Option(
+        DEFAULT_OLLAMA_HOST, "--ollama-host",
+        help="Адрес сервера Ollama (если запущен не локально или на другом порту).",
+    ),
 ) -> None:
     """Проверяет окружение: ffmpeg, GPU/CUDA, доступность Ollama и нужной модели."""
     ok = True

@@ -102,6 +102,13 @@ def test_summarize_unknown_style_fails_gracefully(tmp_path: Path) -> None:
     assert "Ошибка" in result.output
 
 
+def test_help_alias_h_works_on_root_and_subcommands() -> None:
+    for args in (["-h"], ["process", "-h"], ["transcribe", "-h"], ["summarize", "-h"], ["doctor", "-h"]):
+        result = runner.invoke(app, args)
+        assert result.exit_code == 0, (args, result.output)
+        assert "Usage" in result.output
+
+
 def test_doctor_runs() -> None:
     result = runner.invoke(app, ["doctor"])
     # На этой машине всё должно быть настроено (см. M0/M3) - код 0.
