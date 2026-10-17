@@ -97,7 +97,7 @@ def process(
     ),
     summary_style: str = typer.Option(
         DEFAULT_SUMMARY_STYLE, "--summary-style",
-        help="Стиль выжимки: 'краткая' (2-4 предложения), "
+        help="Стиль выжимки: 'краткая' (4-6 предложений), "
              "'подробная' (несколько абзацев) или 'тезисы' (маркированный список).",
     ),
     keep_audio: bool = typer.Option(
@@ -227,7 +227,7 @@ def summarize_cmd(
     ),
     summary_style: str = typer.Option(
         DEFAULT_SUMMARY_STYLE, "--summary-style",
-        help="Стиль выжимки: 'краткая' (2-4 предложения), "
+        help="Стиль выжимки: 'краткая' (4-6 предложений), "
              "'подробная' (несколько абзацев) или 'тезисы' (маркированный список).",
     ),
     ollama_host: str = typer.Option(

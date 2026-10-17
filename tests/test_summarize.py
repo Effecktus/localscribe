@@ -9,12 +9,13 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import httpx
 import pytest
 
-from localscribe.config import DEFAULT_OLLAMA_MODEL
+from localscribe.config import DEFAULT_OLLAMA_MODEL, DEFAULT_SUMMARY_STYLE
 from localscribe.errors import OllamaConnectionError, OllamaRequestError
 from localscribe.summarize import (
     SummaryResult,
@@ -32,6 +33,18 @@ SAMPLE_TEXT = (
     "полностью локально, без отправки данных в облако."
 )
 
+FIRST_PERSON_TEXT = (
+    "Я сегодня наконец-то купил себе новый компьютер, собрал его сам. "
+    "Потратил на это дело почти всю зарплату, но я не жалею, он мне нужен "
+    "для работы. Ещё я решил, что в отпуск в этом году поеду к родителям, "
+    "нужно будет заранее договориться с ними о датах."
+)
+
+# Диапазон символов китайского письма (CJK Unified Ideographs) - используем
+# для проверки, что модель не "съехала" на китайский язык посреди ответа
+# (наблюдавшийся на практике глитч Qwen2.5 на длинной генерации).
+_CJK_RE = re.compile(r"[一-鿿]")
+
 
 def test_summarize_short_text_direct() -> None:
     result = summarize(SAMPLE_TEXT, style="краткая")
@@ -41,6 +54,32 @@ def test_summarize_short_text_direct() -> None:
     assert result.model_name == DEFAULT_OLLAMA_MODEL
     assert len(result.summary) > 0
     assert len(result.summary) < len(SAMPLE_TEXT) * 2  # действительно выжимка, а не перепев
+
+
+def test_summarize_default_style_is_detailed() -> None:
+    result = summarize(SAMPLE_TEXT)
+    assert result.style == DEFAULT_SUMMARY_STYLE == "подробная"
+
+
+def test_summarize_preserves_first_person_voice() -> None:
+    """Регрессия: раньше модель пересказывала 'я' как 'владелец канала'/'автор'
+    в третьем лице. Выжимка текста от первого лица должна остаться от первого лица."""
+    result = summarize(FIRST_PERSON_TEXT, style="краткая")
+
+    lowered = result.summary.lower()
+    assert " я " in f" {lowered} " or lowered.startswith("я ")
+    for forbidden in ("автор", "рассказчик", "владелец канала", "он решил", "герой"):
+        assert forbidden not in lowered, f"Нашёл '{forbidden}' - модель ушла в третье лицо"
+
+
+def test_summarize_stays_in_russian_no_language_drift() -> None:
+    """Регрессия: на длинной генерации Qwen2.5 иногда 'съезжал' на китайский
+    язык посреди русского ответа. Проверяем на всех трёх стилях."""
+    for style in ("краткая", "подробная", "тезисы"):
+        result = summarize(SAMPLE_TEXT, style=style)
+        assert not _CJK_RE.search(result.summary), (
+            f"Обнаружены китайские символы в выжимке (style={style!r}): {result.summary!r}"
+        )
 
 
 def test_summarize_bullet_style_contains_list_markers() -> None:
