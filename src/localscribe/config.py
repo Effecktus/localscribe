@@ -16,6 +16,12 @@ DEFAULT_LANGUAGE = "ru"
 # --- Ollama / суммаризация ---
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 DEFAULT_OLLAMA_MODEL = "qwen2.5:7b-instruct"
+DEFAULT_SUMMARY_STYLE = "краткая"  # краткая | подробная | тезисы
+OLLAMA_TIMEOUT_SECONDS = 180.0
+# Размер кусков транскрипта для map-reduce суммаризации (в символах). Подобран
+# с запасом под контекстное окно 7B-моделей (обычно 4096 токенов у Ollama по
+# умолчанию) - оставляет место под промпт и ответ.
+SUMMARY_CHUNK_CHAR_LIMIT = 3000
 
 # Расширения файлов, которые мы считаем "медиа" (видео или аудио) на входе.
 SUPPORTED_EXTENSIONS = {

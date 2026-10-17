@@ -29,3 +29,18 @@ class AudioExtractionError(LocalscribeError):
 
 class UnsupportedInputError(LocalscribeError):
     """Входной файл не существует или не является медиафайлом."""
+
+
+class OllamaConnectionError(LocalscribeError):
+    """Не удалось подключиться к серверу Ollama."""
+
+    def __init__(self, host: str, cause: Exception) -> None:
+        super().__init__(
+            f"Не удалось подключиться к Ollama по адресу {host}.\n"
+            f"Запущен ли сервер? Проверьте командой: ollama serve\n"
+            f"Исходная ошибка: {cause}"
+        )
+
+
+class OllamaRequestError(LocalscribeError):
+    """Ollama вернул ошибку на запрос (например, модель не найдена)."""
