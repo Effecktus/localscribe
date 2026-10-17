@@ -6,7 +6,6 @@ requires-python = ">=3.12"
 dependencies = [
     "faster-whisper==1.2.1",
     "av<19,>=18",          # PyAV 19+ сломал сигнатуру av.open() (metadata_errors), которую использует faster-whisper
-    "torch==2.11.0",
     "nvidia-cublas-cu12",
     "nvidia-cudnn-cu12",
     "typer>=0.15",

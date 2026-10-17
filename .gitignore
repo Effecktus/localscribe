@@ -20,6 +20,8 @@ Thumbs.db
 *.transcript.txt
 *.summary.txt
 /outputs/
+# ...кроме тестовых фикстур - их мы коммитим осознанно
+!tests/fixtures/*.wav
 
 # Model caches (большие, качаются при первом запуске)
 .cache/
