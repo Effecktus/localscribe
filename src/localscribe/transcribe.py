@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import gc
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -16,6 +17,7 @@ from localscribe.config import (
     DEFAULT_WHISPER_COMPUTE_TYPE,
     DEFAULT_WHISPER_DEVICE,
     DEFAULT_WHISPER_MODEL,
+    WHISPER_VAD_FILTER,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,13 +66,28 @@ def _load_model(model_name: str, device: str, compute_type: str) -> WhisperModel
     return WhisperModel(model_name, device=device, compute_type=compute_type)
 
 
+def release_models() -> None:
+    """Освобождает кэш Whisper перед загрузкой другого GPU-бэкенда."""
+    _load_model.cache_clear()
+    gc.collect()
+
+
 def _run(
-    model: WhisperModel, audio_path: Path, language: str | None
+    model: WhisperModel,
+    audio_path: Path,
+    language: str | None,
+    initial_prompt: str | None = None,
+    vad_filter: bool = WHISPER_VAD_FILTER,
 ) -> tuple[list[TranscriptSegment], object]:
     """Запускает инференс и сразу разворачивает ленивый генератор сегментов -
     любая ошибка CUDA-инференса (например, отсутствующая DLL) происходит именно
     здесь, а не при создании модели."""
-    segments_iter, info = model.transcribe(str(audio_path), language=language)
+    segments_iter, info = model.transcribe(
+        str(audio_path),
+        language=language,
+        initial_prompt=initial_prompt,
+        vad_filter=vad_filter,
+    )
     segments = [
         TranscriptSegment(start=s.start, end=s.end, text=s.text.strip())
         for s in segments_iter
@@ -85,6 +102,8 @@ def transcribe(
     device: str = DEFAULT_WHISPER_DEVICE,
     compute_type: str = DEFAULT_WHISPER_COMPUTE_TYPE,
     language: str | None = DEFAULT_LANGUAGE,
+    initial_prompt: str | None = None,
+    vad_filter: bool = WHISPER_VAD_FILTER,
 ) -> TranscriptionResult:
     """Транскрибирует аудиофайл (WAV 16kHz mono, см. `localscribe.audio`) в текст.
 
@@ -100,6 +119,12 @@ def transcribe(
         device: "cuda" или "cpu".
         compute_type: точность вычислений ("float16" для GPU, "int8" для CPU).
         language: код языка ("ru"), либо None для автоопределения.
+        initial_prompt: подсказка модели - связное предложение с именами
+            собственными, которые встречаются в записи (города, люди,
+            термины). Заметно улучшает их распознавание; см. развёрнутый
+            комментарий в config.py о том, почему это именно связный текст,
+            а не список, и почему дефолта нет.
+        vad_filter: отсекать участки без речи перед распознаванием.
     """
     audio_path = Path(audio_path)
     if not audio_path.is_file():
@@ -116,7 +141,7 @@ def transcribe(
 
     try:
         model = _load_model(model_name, device, compute_type)
-        segments, info = _run(model, audio_path, language)
+        segments, info = _run(model, audio_path, language, initial_prompt, vad_filter)
     except Exception as exc:
         if device != "cpu":
             logger.warning(
@@ -124,7 +149,7 @@ def transcribe(
             )
             device, compute_type = "cpu", CPU_FALLBACK_COMPUTE_TYPE
             model = _load_model(model_name, device, compute_type)
-            segments, info = _run(model, audio_path, language)
+            segments, info = _run(model, audio_path, language, initial_prompt, vad_filter)
         else:
             raise
 

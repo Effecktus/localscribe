@@ -63,7 +63,7 @@ def _fail(message: str) -> "typer.Exit":
 # сообщение вместо traceback. LocalscribeError - сбои внешних систем (ffmpeg,
 # Ollama); ValueError/FileNotFoundError - невалидный вход (например, пустой
 # транскрипт или неизвестный --summary-style).
-EXPECTED_ERRORS = (LocalscribeError, ValueError, FileNotFoundError)
+EXPECTED_ERRORS = (LocalscribeError, ValueError, OSError)
 
 
 @app.command(context_settings=CONTEXT_SETTINGS)
@@ -95,6 +95,15 @@ def process(
         help="Устройство для транскрибации: 'cuda' (GPU) или 'cpu'. "
              "При сбое/отсутствии CUDA автоматически откатывается на CPU.",
     ),
+    hint: Optional[str] = typer.Option(
+        None, "--hint",
+        help="Подсказка распознавателю: СВЯЗНОЕ предложение с именами "
+             "собственными из записи (города, люди, термины). Например: "
+             "'Мы с Эмилем съездили из Казани в Свияжск, заглянули в Иннополис.' "
+             "Заметно улучшает их распознавание. Важно давать именно "
+             "предложение, а не список через запятую: список ломает "
+             "распознавание соседних имён.",
+    ),
     summary_style: str = typer.Option(
         DEFAULT_SUMMARY_STYLE, "--summary-style",
         help="Стиль выжимки: 'краткая' (4-6 предложений), "
@@ -109,6 +118,7 @@ def process(
         DEFAULT_OLLAMA_HOST, "--ollama-host",
         help="Адрес сервера Ollama (если запущен не локально или на другом порту).",
     ),
+    num_predict: int = typer.Option(1600, "--num-predict", min=1, help="Максимум токенов выжимки."),
 ) -> None:
     """Полный пайплайн: входной файл -> транскрипт -> выжимка."""
     out_dir = out_dir or input_path.parent
@@ -124,17 +134,19 @@ def process(
         if keep_audio:
             wav_path = audio.extract_audio(input_path, out_dir / f"{stem}.audio.wav")
             transcript_text = _transcribe_and_save(
-                wav_path, transcript_path, whisper_model, device, language
+                wav_path, transcript_path, whisper_model, device, language, hint
             )
         else:
             with audio.temporary_audio(input_path) as wav_path:
                 transcript_text = _transcribe_and_save(
-                    wav_path, transcript_path, whisper_model, device, language
+                    wav_path, transcript_path, whisper_model, device, language, hint
                 )
 
+        transcribe_mod.release_models()
         console.print("[bold]\\[3/3][/bold] Делаю выжимку...")
         summary = summarize_mod.summarize(
-            transcript_text, model=llm_model, host=ollama_host, style=summary_style
+            transcript_text, model=llm_model, host=ollama_host, style=summary_style,
+            num_predict=num_predict,
         )
         summarize_mod.save_summary(summary, summary_path)
         console.print(f"   -> выжимка сохранена: [green]{summary_path}[/green]")
@@ -152,10 +164,12 @@ def _transcribe_and_save(
     whisper_model: str,
     device: str,
     language: Optional[str],
+    hint: Optional[str] = None,
 ) -> str:
     console.print("[bold]\\[2/3][/bold] Распознаю речь...")
     result = transcribe_mod.transcribe(
-        wav_path, model_name=whisper_model, device=device, language=language
+        wav_path, model_name=whisper_model, device=device, language=language,
+        initial_prompt=hint,
     )
     transcribe_mod.save_transcript(result, transcript_path)
     console.print(
@@ -190,6 +204,15 @@ def transcribe_cmd(
         help="Устройство для транскрибации: 'cuda' (GPU) или 'cpu'. "
              "При сбое/отсутствии CUDA автоматически откатывается на CPU.",
     ),
+    hint: Optional[str] = typer.Option(
+        None, "--hint",
+        help="Подсказка распознавателю: СВЯЗНОЕ предложение с именами "
+             "собственными из записи (города, люди, термины). Например: "
+             "'Мы с Эмилем съездили из Казани в Свияжск, заглянули в Иннополис.' "
+             "Заметно улучшает их распознавание. Важно давать именно "
+             "предложение, а не список через запятую: список ломает "
+             "распознавание соседних имён.",
+    ),
     keep_audio: bool = typer.Option(
         False, "--keep-audio",
         help="Не удалять промежуточный WAV после обработки "
@@ -203,10 +226,10 @@ def transcribe_cmd(
     try:
         if keep_audio:
             wav_path = audio.extract_audio(input_path, input_path.with_name(f"{input_path.stem}.audio.wav"))
-            _transcribe_and_save(wav_path, out_path, whisper_model, device, language)
+            _transcribe_and_save(wav_path, out_path, whisper_model, device, language, hint)
         else:
             with audio.temporary_audio(input_path) as wav_path:
-                _transcribe_and_save(wav_path, out_path, whisper_model, device, language)
+                _transcribe_and_save(wav_path, out_path, whisper_model, device, language, hint)
     except EXPECTED_ERRORS as exc:
         raise _fail(str(exc))
 
@@ -234,6 +257,7 @@ def summarize_cmd(
         DEFAULT_OLLAMA_HOST, "--ollama-host",
         help="Адрес сервера Ollama (если запущен не локально или на другом порту).",
     ),
+    num_predict: int = typer.Option(1600, "--num-predict", min=1, help="Максимум токенов выжимки."),
 ) -> None:
     """Только суммаризация готового текстового транскрипта (без распознавания речи)."""
     out_path = out_path or transcript_path.with_name(
@@ -242,7 +266,8 @@ def summarize_cmd(
     text = transcript_path.read_text(encoding="utf-8")
 
     try:
-        summary = summarize_mod.summarize(text, model=llm_model, host=ollama_host, style=summary_style)
+        summary = summarize_mod.summarize(text, model=llm_model, host=ollama_host, style=summary_style,
+                                          num_predict=num_predict)
         summarize_mod.save_summary(summary, out_path)
         console.print(f"Выжимка сохранена: [green]{out_path}[/green]")
         console.print()
@@ -326,6 +351,34 @@ def doctor(
         console.print("[bold green]Всё готово к работе.[/bold green]")
     else:
         console.print("[bold red]Есть проблемы, см. сообщения выше.[/bold red]")
+        raise typer.Exit(code=1)
+
+
+@app.command(name="benchmark", context_settings=CONTEXT_SETTINGS)
+def benchmark_cmd(
+    manifest: Path = typer.Argument(..., exists=True, dir_okay=False),
+    out_dir: Path = typer.Option(..., "--out-dir", help="Новая папка для отчёта и ответов."),
+    asr_model: list[str] = typer.Option([], "--asr-model", help="Повторите опцию для каждой ASR-модели."),
+    llm_model: list[str] = typer.Option([], "--llm-model", help="Повторите опцию для каждой LLM."),
+    repeats: int = typer.Option(1, "--repeats", min=1),
+    seed: int = typer.Option(42, "--seed"),
+    num_predict: int = typer.Option(1600, "--num-predict", min=1),
+    chunk_char_limit: int = typer.Option(24000, "--chunk-char-limit", min=1),
+    device: str = typer.Option(DEFAULT_WHISPER_DEVICE, "--device"),
+    ollama_host: str = typer.Option(DEFAULT_OLLAMA_HOST, "--ollama-host"),
+) -> None:
+    """Сравнить модели на наборе с эталонами; сохранить JSON и ответы для проверки."""
+    from localscribe.benchmark import run_benchmark
+    try:
+        report = run_benchmark(manifest, out_dir, asr_models=asr_model,
+                               llm_models=llm_model, repeats=repeats, host=ollama_host,
+                               device=device, seed=seed, num_predict=num_predict,
+                               chunk_char_limit=chunk_char_limit)
+    except EXPECTED_ERRORS as exc:
+        raise _fail(str(exc))
+    failures = sum(row["status"] != "ok" for row in report["runs"])
+    console.print(f"Отчёт: {out_dir / 'report.json'}; ошибок: {failures}")
+    if failures:
         raise typer.Exit(code=1)
 
 

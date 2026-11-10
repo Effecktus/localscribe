@@ -47,11 +47,11 @@ def test_transcribe_falls_back_to_cpu_on_gpu_failure(monkeypatch: pytest.MonkeyP
     original_run = transcribe_module._run
     calls = {"count": 0}
 
-    def flaky_run(model, audio_path, language):
+    def flaky_run(model, audio_path, language, *args, **kwargs):
         calls["count"] += 1
         if calls["count"] == 1:
             raise RuntimeError("симулированная ошибка CUDA-инференса")
-        return original_run(model, audio_path, language)
+        return original_run(model, audio_path, language, *args, **kwargs)
 
     monkeypatch.setattr(transcribe_module, "_cuda_available", lambda: True)
     monkeypatch.setattr(transcribe_module, "_run", flaky_run)
@@ -61,6 +61,55 @@ def test_transcribe_falls_back_to_cpu_on_gpu_failure(monkeypatch: pytest.MonkeyP
     assert calls["count"] == 2
     assert result.device_used == "cpu"
     assert "погода" in result.text.lower()
+
+
+def test_transcribe_passes_hint_and_vad_to_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """initial_prompt и vad_filter должны доезжать до faster-whisper.
+
+    Регрессия: раньше transcribe() звал model.transcribe() только с language,
+    поэтому подсказка по именам собственным и отсечение тишины просто не
+    применялись. На реальной записи это стоило трёх разных неверных написаний
+    "Свияжска" вместо правильного.
+    """
+    captured: dict = {}
+
+    class FakeInfo:
+        language = "ru"
+        language_probability = 0.99
+
+    class FakeModel:
+        def transcribe(self, path, **kwargs):
+            captured.update(kwargs)
+            return iter(()), FakeInfo()
+
+    monkeypatch.setattr(transcribe_module, "_load_model", lambda *a, **k: FakeModel())
+
+    hint = "Мы с Эмилем съездили из Казани в Свияжск."
+    transcribe(FIXTURE, model_name="tiny", device="cpu", initial_prompt=hint)
+
+    assert captured["initial_prompt"] == hint
+    assert captured["vad_filter"] is True, "VAD должен быть включён по умолчанию"
+    assert captured["language"] == "ru"
+
+
+def test_transcribe_vad_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict = {}
+
+    class FakeInfo:
+        language = "ru"
+        language_probability = 0.99
+
+    class FakeModel:
+        def transcribe(self, path, **kwargs):
+            captured.update(kwargs)
+            return iter(()), FakeInfo()
+
+    monkeypatch.setattr(transcribe_module, "_load_model", lambda *a, **k: FakeModel())
+
+    transcribe(FIXTURE, model_name="tiny", device="cpu", vad_filter=False)
+
+    assert captured["vad_filter"] is False
+    assert captured["initial_prompt"] is None  # по умолчанию подсказки нет
 
 
 def test_save_transcript_writes_utf8_text(tmp_path: Path) -> None:

@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from time import perf_counter
 from pathlib import Path
 
 import httpx
@@ -23,6 +24,7 @@ from localscribe.config import (
     DEFAULT_OLLAMA_MODEL,
     DEFAULT_SUMMARY_STYLE,
     OLLAMA_NUM_CTX,
+    OLLAMA_THINK,
     OLLAMA_TIMEOUT_SECONDS,
     SUMMARY_CHUNK_CHAR_LIMIT,
 )
@@ -65,17 +67,40 @@ _VOICE_AND_FIDELITY_RULE = (
     "если сам текст называет себя видео/роликом. Пример:\n"
     "   ПЛОХО: \"В этом видео автор делится событиями прошедшей недели.\"\n"
     "   ХОРОШО: \"На этой неделе я...\"\n"
+    "   Если исходный текст в третьем лице, сохрани третье лицо. Прямая речь "
+    "и цитаты внутри текста не делают весь текст рассказом от первого лица. "
+    "Не выдавай себя за участника событий и не превращай диалог в монолог.\n"
     "3. Отвечай только на русском языке от начала до конца. Не переключайся на "
-    "другие языки (в том числе китайский или английский) ни в одном предложении."
+    "другие языки (в том числе китайский или английский) ни в одном предложении.\n"
+    "4. Не смягчай и не цензурируй содержание. Сохраняй лексику и тон оригинала, "
+    "включая резкие, грубые и нецензурные выражения, если они есть в тексте: не "
+    "заменяй их эвфемизмами ('нехорошее слово', '[censored]') и не пропускай "
+    "неудобные темы. Не добавляй от себя оговорок, предупреждений и моральных "
+    "оценок ('важно помнить, что...', 'следует отметить, что...', 'не стоит...'). "
+    "Твоя задача - сократить текст, а не улучшить, смягчить или прокомментировать "
+    "его.\n"
+    "5. НИЧЕГО НЕ ДОДУМЫВАЙ. Если детали, причины или связи между событиями нет "
+    "в тексте - не вставляй её, даже если она кажется очевидной. Не объединяй "
+    "разные эпизоды в один, не меняй их порядок и не достраивай причинность "
+    "('из-за этого', 'несмотря на'), если её нет в оригинале. Если не уверен "
+    "в детали (что именно произошло, с кем, когда) - напиши обобщённо или "
+    "опусти, но НЕ подменяй её похожей. Пример:\n"
+    "   ПЛОХО: в тексте 'починил кран' -> в выжимке 'сделал ремонт в ванной'.\n"
+    "   ХОРОШО: в тексте 'починил кран' -> в выжимке 'починил кран'.\n"
+    "6. Сохраняй, кому принадлежит утверждение: мнение, обвинение, прогноз "
+    "или предположение не превращай в установленный факт. Сохраняй даты и "
+    "периоды статистики, условия и исключения. Не смешивай численность группы "
+    "с числом задержанных и не меняй участников событий местами."
 )
 
 # Короткое напоминание сразу перед местом, где модель начинает генерировать
 # ответ - модели заметно сильнее следуют инструкции, расположенной прямо перед
 # точкой генерации, чем той же инструкции в начале длинного промпта.
 _VOICE_REMINDER = (
-    "Напоминание: выжимка должна быть от того же лица, что и текст выше (обычно "
-    "это 'я'). Не описывай текст со стороны ('в этом видео...', 'автор...') - "
-    "начни прямо с содержания, как будто сам человек говорит короче."
+    "Напоминание: сохрани лицо повествования исходника: первое для личного "
+    "рассказа, третье для сообщения о других людях. Цитаты не меняют лицо "
+    "всего текста. Начни с содержания, без описания текста или видео. "
+    "Сохрани авторство мнений, числа, даты и важные условия."
 )
 
 _DIRECT_PROMPT = (
@@ -109,17 +134,25 @@ _REDUCE_PROMPT = (
     "Итоговая выжимка:"
 )
 
-_MAP_NUM_PREDICT = 350
-_REDUCE_NUM_PREDICT = 800
-_DIRECT_NUM_PREDICT = 800
+_DIRECT_NUM_PREDICT = 1600
 
-# Низкая temperature для суммаризации: это фактическая задача (сократить, не
-# придумать), и у Qwen2.5 на длинной генерации при более высокой temperature
-# изредка наблюдается уход в другой язык (например, в китайский) посреди
-# русского текста - при 0.2-0.3 такого не наблюдалось.
-_SUMMARY_TEMPERATURE = 0.2
+# Низкая temperature: суммаризация - задача фактическая (сократить, а не
+# сочинить), а на рыхлых разговорных транскриптах с ошибками ASR высокая
+# температура заметно увеличивает конфабуляции.
+# Эти значения отобраны замером на реальном транскрипте (8 прогонов на модель,
+# см. историю в PLAN.md): qwen3:8b на них не исказил ни одного проверяемого
+# факта и покрыл 7.2/10 эпизодов против 5.9 у gemma3:4b.
+# Примечание: официальный пресет Qwen3 для режима без размышлений - другой
+# (temperature=0.7 / top_p=0.8 / top_k=20). Если захочется тюнинга, начинать
+# стоит оттуда, но вслепую не менять: здешние значения проверены на задаче.
+_SUMMARY_TEMPERATURE = 0.3
+_SUMMARY_TOP_P = 0.95
+_SUMMARY_TOP_K = 64
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+# Блок рассуждений гибридных моделей (Qwen3 и подобные), см. OLLAMA_THINK.
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 
 @dataclass
@@ -128,6 +161,7 @@ class SummaryResult:
     style: str
     model_name: str
     chunks_used: int  # 1, если текст суммаризирован за один проход (без map-reduce)
+    calls: list[dict] = field(default_factory=list)
 
 
 def _call_ollama(
@@ -137,18 +171,34 @@ def _call_ollama(
     host: str,
     num_predict: int | None = None,
     timeout: float = OLLAMA_TIMEOUT_SECONDS,
+    metrics: list[dict] | None = None,
+    seed: int | None = None,
 ) -> str:
     # num_ctx явно: по умолчанию Ollama грузит модель с контекстом всего 4096
     # токенов, даже если сама модель поддерживает намного больше - без этого
     # длинные транскрипты обрезались бы/требовали map-reduce без необходимости.
-    options: dict = {"temperature": _SUMMARY_TEMPERATURE, "num_ctx": OLLAMA_NUM_CTX}
+    options: dict = {
+        "temperature": _SUMMARY_TEMPERATURE,
+        "top_p": _SUMMARY_TOP_P,
+        "top_k": _SUMMARY_TOP_K,
+        "num_ctx": OLLAMA_NUM_CTX,
+    }
     if num_predict is not None:
         options["num_predict"] = num_predict
-    payload: dict = {"model": model, "prompt": prompt, "stream": False, "options": options}
+    if seed is not None:
+        options["seed"] = seed
+    payload: dict = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        "think": OLLAMA_THINK,
+        "options": options,
+    }
 
+    started = perf_counter()
     try:
-        response = httpx.post(f"{host}/api/generate", json=payload, timeout=timeout)
-    except httpx.ConnectError as exc:
+        response = httpx.post(f"{host}/api/generate", json=payload, timeout=timeout, trust_env=False)
+    except httpx.HTTPError as exc:
         raise OllamaConnectionError(host, exc) from exc
 
     if response.status_code != 200:
@@ -158,12 +208,37 @@ def _call_ollama(
         )
 
     data = response.json()
-    return data["response"].strip()
+    if metrics is not None:
+        metrics.append({
+            "seconds": perf_counter() - started,
+            "model": data.get("model", model),
+            "options": options.copy(),
+            **{key: data.get(key) for key in (
+                "done_reason", "prompt_eval_count", "eval_count", "total_duration",
+                "load_duration", "prompt_eval_duration", "eval_duration",
+            )},
+        })
+    if data.get("done_reason") == "length":
+        raise OllamaRequestError(
+            f"Ответ модели '{model}' обрезан по лимиту {num_predict} токенов. "
+            "Увеличьте num_predict; неполная выжимка не сохранена."
+        )
+    # think=False Ollama обычно соблюдает, но если модель всё же вернула блок
+    # размышлений (другой раннер, другая версия) - он не должен попасть в выжимку.
+    result = _THINK_BLOCK_RE.sub("", data["response"]).strip()
+    if not result:
+        raise OllamaRequestError(f"Модель '{model}' вернула пустую выжимку.")
+    return result
 
 
 def _split_into_chunks(text: str, max_chars: int = SUMMARY_CHUNK_CHAR_LIMIT) -> list[str]:
     """Режет текст на части по границам предложений, не превышая max_chars на часть."""
-    sentences = _SENTENCE_SPLIT_RE.split(text.strip())
+    if max_chars < 1:
+        raise ValueError("Лимит части должен быть положительным.")
+    # Без пунктуации ASR может вернуть одно предложение длиннее всего окна.
+    sentences = [part for sentence in _SENTENCE_SPLIT_RE.split(text.strip())
+                 for part in (sentence[i:i + max_chars]
+                              for i in range(0, len(sentence), max_chars))]
     chunks: list[str] = []
     current: list[str] = []
     current_len = 0
@@ -189,6 +264,8 @@ def summarize(
     style: str = DEFAULT_SUMMARY_STYLE,
     chunk_char_limit: int = SUMMARY_CHUNK_CHAR_LIMIT,
     timeout: float = OLLAMA_TIMEOUT_SECONDS,
+    num_predict: int = _DIRECT_NUM_PREDICT,
+    seed: int | None = None,
 ) -> SummaryResult:
     """Делает выжимку текста транскрипта через локальную LLM в Ollama.
 
@@ -214,18 +291,22 @@ def summarize(
         )
 
     text = text.strip()
+    if num_predict < 1:
+        raise ValueError("num_predict должен быть положительным.")
     if not text:
         raise ValueError("Пустой транскрипт - нечего суммаризировать.")
 
     style_instruction = STYLE_INSTRUCTIONS[style]
     chunks = _split_into_chunks(text, chunk_char_limit)
+    metrics: list[dict] = []
 
     if len(chunks) == 1:
         prompt = _DIRECT_PROMPT.format(style_instruction=style_instruction, text=chunks[0])
         summary = _call_ollama(
-            prompt, model=model, host=host, num_predict=_DIRECT_NUM_PREDICT, timeout=timeout
+            prompt, model=model, host=host, num_predict=num_predict, timeout=timeout,
+            metrics=metrics, seed=seed,
         )
-        return SummaryResult(summary=summary, style=style, model_name=model, chunks_used=1)
+        return SummaryResult(summary=summary, style=style, model_name=model, chunks_used=1, calls=metrics)
 
     logger.info(
         "Транскрипт длинный (%d символов), разбиваю на %d частей для map-reduce.",
@@ -236,17 +317,35 @@ def summarize(
         logger.info("Суммаризирую часть %d/%d...", i, len(chunks))
         partial = _call_ollama(
             _MAP_PROMPT.format(chunk=chunk),
-            model=model, host=host, num_predict=_MAP_NUM_PREDICT, timeout=timeout,
+            model=model, host=host, num_predict=num_predict, timeout=timeout,
+            metrics=metrics, seed=seed,
         )
         partial_summaries.append(partial)
 
     combined = "\n\n".join(f"Часть {i}: {s}" for i, s in enumerate(partial_summaries, start=1))
+    # Даже промежуточные выжимки очень длинной записи могут не войти в окно.
+    for _ in range(8):
+        groups = _split_into_chunks(combined, max(chunk_char_limit, SUMMARY_CHUNK_CHAR_LIMIT))
+        if len(groups) == 1:
+            break
+        reduced = [
+            _call_ollama(_MAP_PROMPT.format(chunk=group), model=model, host=host,
+                         num_predict=num_predict, timeout=timeout, metrics=metrics, seed=seed)
+            for group in groups
+        ]
+        next_combined = "\n\n".join(reduced)
+        if len(next_combined) >= len(combined):
+            raise OllamaRequestError("Промежуточные выжимки не сокращаются до размера контекста.")
+        combined = next_combined
+    else:
+        raise OllamaRequestError("Слишком много уровней суммаризации; увеличьте размер части.")
     reduce_prompt = _REDUCE_PROMPT.format(style_instruction=style_instruction, combined=combined)
     summary = _call_ollama(
-        reduce_prompt, model=model, host=host, num_predict=_REDUCE_NUM_PREDICT, timeout=timeout
+        reduce_prompt, model=model, host=host, num_predict=num_predict, timeout=timeout,
+        metrics=metrics, seed=seed,
     )
 
-    return SummaryResult(summary=summary, style=style, model_name=model, chunks_used=len(chunks))
+    return SummaryResult(summary=summary, style=style, model_name=model, chunks_used=len(chunks), calls=metrics)
 
 
 def save_summary(result: SummaryResult, output_path: str | Path) -> Path:
